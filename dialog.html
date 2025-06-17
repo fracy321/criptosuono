@@ -1,0 +1,182 @@
+<meta name='viewport' content='width=device-width, initial-scale=1'/><!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cripta/Decripta con Suono</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            margin: 10px 0;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+        }
+        #output {
+            margin-top: 10px;
+            font-weight: bold;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Cripta/Decripta con Suono</h2>
+        <button onclick="showEncrypt()">Cripta</button>
+        <button onclick="showDecrypt()">Decripta</button>
+        
+        <div id="encryptSection" style="display: none;">
+            <h3>Cripta Messaggio</h3>
+            <textarea id="messageInput" placeholder="Inserisci il messaggio"></textarea>
+            <button onclick="encryptAndPlay()">Invia</button>
+        </div>
+        
+        <div id="decryptSection" style="display: none;">
+            <h3>Decripta Messaggio</h3>
+            <button onclick="startListening()">Ascolta</button>
+            <button onclick="stopListening()">Ferma</button>
+            <div id="output">Messaggio decriptato:</div>
+        </div>
+    </div>
+
+    <script>
+        const context = new (window.AudioContext || window.webkitAudioContext)();
+        const sampleRate = context.sampleRate;
+        const freq0 = 15000;
+        const freq1 = 17000;
+        const bitDuration = 0.2;
+        const startMarker = '11110000';
+        const endMarker = '00001111';
+        let listening = false;
+        let interval = null;
+        let stream = null;
+        let analyser, source, binary = '';
+
+        function showEncrypt() {
+            document.getElementById('encryptSection').style.display = 'block';
+            document.getElementById('decryptSection').style.display = 'none';
+        }
+
+        function showDecrypt() {
+            document.getElementById('encryptSection').style.display = 'none';
+            document.getElementById('decryptSection').style.display = 'block';
+        }
+
+        function textToBinary(text) {
+            return startMarker + text.split('').map(c =>
+                c.charCodeAt(0).toString(2).padStart(8, '0')
+            ).join('') + endMarker;
+        }
+
+        function binaryToText(binary) {
+            let start = binary.indexOf(startMarker) + startMarker.length;
+            let end = binary.indexOf(endMarker);
+            if (start === -1 || end === -1 || end <= start) return 'Nessun messaggio valido trovato.';
+            let message = '';
+            for (let i = start; i < end; i += 8) {
+                const byte = binary.slice(i, i + 8);
+                message += String.fromCharCode(parseInt(byte, 2));
+            }
+            return message;
+        }
+
+        function playBinary(binary) {
+            const totalSamples = Math.ceil(binary.length * bitDuration * sampleRate);
+            const buffer = context.createBuffer(1, totalSamples, sampleRate);
+            const data = buffer.getChannelData(0);
+
+            for (let i = 0; i < binary.length; i++) {
+                const freq = binary[i] === '1' ? freq1 : freq0;
+                const startSample = i * bitDuration * sampleRate;
+                for (let j = 0; j < bitDuration * sampleRate; j++) {
+                    data[startSample + j] = Math.sin(2 * Math.PI * freq * j / sampleRate);
+                }
+            }
+
+            const source = context.createBufferSource();
+            source.buffer = buffer;
+            source.connect(context.destination);
+            source.start();
+        }
+
+        function encryptAndPlay() {
+            const message = document.getElementById('messageInput').value;
+            if (!message) {
+                alert("Inserisci un messaggio.");
+                return;
+            }
+            const binary = textToBinary(message);
+            playBinary(binary);
+        }
+
+        async function startListening() {
+            if (listening) return;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                source = context.createMediaStreamSource(stream);
+                analyser = context.createAnalyser();
+                analyser.fftSize = 2048;
+                source.connect(analyser);
+
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Float32Array(bufferLength);
+                const index0 = Math.floor(freq0 / (sampleRate / 2) * bufferLength);
+                const index1 = Math.floor(freq1 / (sampleRate / 2) * bufferLength);
+                binary = '';
+                listening = true;
+
+                interval = setInterval(() => {
+                    analyser.getFloatFrequencyData(dataArray);
+                    const amp0 = dataArray[index0];
+                    const amp1 = dataArray[index1];
+                    if (amp1 > amp0 && amp1 > -60) binary += '1';
+                    else if (amp0 > amp1 && amp0 > -60) binary += '0';
+
+                    const decoded = binaryToText(binary);
+                    document.getElementById('output').innerText = 'Messaggio decriptato:\n' + decoded;
+                }, bitDuration * 1000);
+            } catch (err) {
+                console.error("Errore microfono:", err);
+                alert("Assicurati di autorizzare l'accesso al microfono.");
+            }
+        }
+
+        function stopListening() {
+            if (!listening) return;
+            clearInterval(interval);
+            stream.getTracks().forEach(track => track.stop());
+            listening = false;
+        }
+    </script>
+</body>
+</html>
